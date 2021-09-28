@@ -1,0 +1,732 @@
+﻿<!--
+Circle funtion
+tetrahedron for loop
+Cylinder function
+lighting
+
+Lightning in cube is opposite try changing the polarity of z component of lightvector 
+
+TODO: Add typed arrays for better performance -- can't use typed arrays anywhere
+-->
+
+<!DOCTYPE html>
+<html>
+  <body>
+
+    <canvas id="cvs" width="700" height="500" style="border: 2px solid #000"></canvas>
+    <input type="file" id="file" />
+
+    <script>
+	const cvs = document.getElementById("cvs");
+	const ctx = cvs.getContext("2d");
+
+	const input = document.getElementById('file');
+	input.addEventListener('change', Loadfile, false);
+
+	const width = cvs.width;
+	const height = cvs.height;
+
+	var focal = 200;  //increasing focal increases distance of projection plane 
+			   //if you decrease focal after certain point cube will disappear 
+			  //this means that projection plane is at the same point as camera 
+	var scale = 0;
+	var rotate = false;
+	var mouse_x, mouse_y;
+	var px, py;
+
+	var test = 0;	//to print to console
+	
+	var lightVector = new Point3d(0, 0, -1);  //width/2 + 0.5, height/2 - 0.2, -2
+	const backgroundLight = 0.1;
+	const faceColor = new Uint16Array([80, 80, 250]);
+
+	var objects_net;
+
+	function m_down(e) {
+		rotate = true;
+		mouse_x = e.clientX;
+		mouse_y = e.clientY;
+		px = e.clientX;
+		py = e.clientY;
+	}
+
+	function m_up(e) { rotate = false;}
+	
+	function m_move(e) {
+		if(!rotate) { return; }
+		var dx = 0.5*(e.clientX - px);
+		var dy = 0.5*(e.clientY - py);
+		px = e.clientX;
+		py = e.clientY;
+
+		if(objects_net != undefined) {
+			objects_net.rotateY(dx);
+			objects_net.rotateX(dy);
+		}
+		
+		torus.rotateY(dx);
+		torus.rotateX(dy);	
+	}
+
+	function move(e) {
+		if(e.keyCode == 38) {//up arrow
+			focal -= 2;
+		}
+		else if(e.keyCode == 40) {//down arrow
+			focal += 2;
+		}
+		else if(e.keyCode == 87) {
+			for(var i = 0;i < objects_net.vertices.length; i++) {
+				var p = objects_net.vertices[i];
+				p.y -= 20;	//-5
+			}
+			objects_net.y -= 20;
+			//w
+		}
+		else if(e.keyCode == 83) {
+			for(var i = 0;i < objects_net.vertices.length; i++) {
+				var p = objects_net.vertices[i];
+				p.y += 20;
+			}
+			objects_net.y += 20;
+			//s
+		}
+		else if(e.keyCode == 68) {
+			for(var i = 0;i < objects_net.vertices.length; i++) {
+				var p = objects_net.vertices[i];
+				p.x += 20;
+			}
+			objects_net.x += 20;
+			//d
+		}
+		else if(e.keyCode == 65) {
+			for(var i = 0;i < objects_net.vertices.length; i++) {
+				var p = objects_net.vertices[i];
+				p.x -= 20;
+			}
+			objects_net.x -= 20;
+			//a
+		}
+	}
+
+	function map(val, low1, high1, low2, high2) {
+		return (val - low1)*(high2 - low2)/(high1 - low1) + low2;
+	}
+
+	function max(x, y) {return x >= y ? x : y;}
+
+	function Point2d(x, y) {this.x = x; this.y = y;}
+	function Point3d(x, y, z) {this.x = x; this.y = y; this.z = z;}
+
+	function lerpColor(c1, c2, factor) {
+		var r = Math.round( (c2[0]-c1[0])*factor + c1[0] );//c1[0]*(1-factor) + c2[0]*factor
+		var g = Math.round( (c2[1]-c1[1])*factor + c1[1] );
+		var b = Math.round( (c2[2]-c1[2])*factor + c1[2] );
+		r = (r).toString(16);
+		g = (g).toString(16);
+		b = (b).toString(16);
+		if(r.length == 1) {
+			r = 0+r;
+		}
+		if(g.length == 1) {
+			g = 0+g;
+		}
+		if(b.length == 1) {
+			b = 0+b;
+		}
+		
+		/*if(r < 16) {
+		if(g < 16) {
+		if(b < 16) {
+			return '#'+0+(r).toString(16)+0+(g).toString(16)+0+(b).toString(16);
+		}
+			return '#'+0+(r).toString(16)+0+(g).toString(16)+(b).toString(16);
+		}
+			return '#'+0+(r).toString(16)+(g).toString(16)+(b).toString(16);
+		}*/
+		return '#'+r+g+b;
+	}
+
+	//reduce the magnitude of the vector to 1
+	function normaliseVector( v ) {
+		var d = Math.sqrt(v.x*v.x + v.y*v.y + v.z*v.z);
+		var vector = new Point3d(v.x/d, v.y/d, v.z/d);
+		return vector;
+	}
+
+	//subtracts 2 vectors
+	function subtractVector(v1, v2) {
+		var x = new Point3d(v2.x - v1.x, v2.y - v1.y, v2.z - v1.z)
+		return x;
+	}
+
+	function dotProduct(v1, v2) {
+		return v1.x*v2.x + v1.y*v2.y + v1.z*v2.z;
+	}
+
+	function normalOfPlane(vertices, face) {
+		var vert_1 = vertices[face[0]];
+		var vert_2 = vertices[face[1]];
+		var vert_3 = vertices[face[3]];
+
+		var v1 = subtractVector(vert_1, vert_2);
+		var v2 = subtractVector(vert_1, vert_3);
+
+		var v3 = new Point3d(v1.y*v2.z - v1.z*v2.y, -(v1.x*v2.z - v2.x*v1.z), v1.x*v2.y - v1.y*v2.x);
+		return v3;
+	}
+
+	function X_rotate(rad, vertices, c_y, c_z) {	//c_y and c_z are 3d center coordinates
+		rad *= Math.PI/180;
+		var sin = Math.sin(rad);
+		var cos = Math.cos(rad);
+
+		for(var i = 0;i < vertices.length; i++) {
+			var p = vertices[i];
+			var y = p.y - c_y;	  //here we are calculating the distance of that
+			var z = p.z - c_z;	  //point from its center
+
+			p.y = y*cos - z*sin + c_y;
+			p.z = z*cos + y*sin + c_z;//here we don't have to assign p.y back to vertices
+						  //as in javascript objects or arrays are assigned
+						  //by reference
+		}
+	}
+
+	function Y_rotate(rad, vertices, c_x, c_z) {	//c_x, c_z are center coordinates of object
+		rad *= Math.PI/180;
+		var sin = Math.sin(rad);
+		var cos = Math.cos(rad);
+
+		for(var i = 0;i < vertices.length; i++) {
+			var p = vertices[i];
+			var x = p.x - c_x;
+			var z = p.z - c_z;
+
+			p.x = x*cos - z*sin + c_x;
+			p.z = z*cos + x*sin + c_z;
+		}
+	}
+
+	function Z_rotate(rad, vertices, c_x, c_y) {
+		rad *= Math.PI/180;
+		var sin = Math.sin(rad);
+		var cos = Math.cos(rad);
+
+		for(var i = 0;i < vertices.length; i++) {
+			var p = vertices[i];
+			var x = p.x - c_x;
+			var y = p.y - c_y;
+
+			p.x = x*cos - y*sin + c_x;
+			p.y = y*cos + x*sin + c_y;
+		}
+	}
+
+	//Below function retuns 2d points from 3d points
+	function Project(vertices, width, height) {
+		var points2d = new Array(vertices.length);
+		//here can't add Float32Array as we are storing an object and not a Float value
+		//if creted a float32array then it would return "NaN"
+	
+		for(var index = 0;index < vertices.length; index++) {
+			var p = vertices[index];
+
+			var x = p.x*(focal/p.z) + width/2;
+			var y = p.y*(focal/p.z) + height/2;
+
+			points2d[index] = new Point2d(x, y);
+		}
+		return points2d;
+	}
+
+	function Parse(x) {
+		var y = Math.round(x/100)*100
+		return y;
+
+		//Float32Array some floats are not stored properly so it is important to round
+		//the numbers before accessing them [also don't directly return Math.round]
+	}
+
+	function Sort( faces, vertices ) {
+		var i, v, k;
+		var sum = 0;
+		var sum2 = 0;
+
+		function swap(t) {
+			var temp = faces[t];
+			faces[t] = faces[t+1];
+			faces[t+1] = temp;
+		}
+
+		for(i = 0;i < faces.length - 1; i++) {	//-1 as we are comparing indices
+							//i and i+1
+			for(k = 0;k < faces.length -i-1; k++) {
+				var p = faces[k];
+				for(v = 0;v < p.length; v++) { sum = sum + vertices[p[v]].z; }
+				sum = sum/p.length;
+
+				var q = faces[k+1]
+				for(v = 0;v < q.length; v++) { sum2 = sum2 + vertices[q[v]].z; }
+				sum2 = sum2/q.length;
+
+				if(sum < sum2) { swap(k); }
+			}
+		}
+	}
+
+	function Object(vertices, faces, x, y, z) {
+		//Point3d.call(this, x, y, z);
+		this.x = x; this.y = y; this.z = z;
+
+		this.vertices = vertices;
+		this.faces = faces;
+
+		//Sort(this.faces, this.vertices);
+
+		this.show = function() {
+			ctx.fillStyle = "#0000ff";
+			var project = Project(this.vertices, 700, 500);
+
+			for(var i = 0;i < this.faces.length; i++) {
+				var f = this.faces[i];
+
+				var p1 = this.vertices[f[0]];
+				var p2 = this.vertices[f[1]];
+				var p3 = this.vertices[f[2]];
+
+				var v1 = new Point3d( p2.x - p1.x, p2.y - p1.y, p2.z - p1.z );
+				var v2 = new Point3d( p3.x - p1.x, p3.y - p1.y, p3.z - p1.z );
+			
+				var n = new Point3d(v1.y*v2.z - v1.z*v2.y, v1.z*v2.x - v1.x*v2.z, v1.x*v2.y - v1.y*v2.x);
+
+				if(-p1.x*n.x - p1.y*n.y - p1.z*n.z >= 0) {
+					ctx.beginPath();
+					ctx.moveTo( project[f[0]].x, project[f[0]].y );
+					ctx.lineTo( project[f[1]].x, project[f[1]].y );
+					ctx.lineTo( project[f[2]].x, project[f[2]].y );
+					ctx.lineTo( project[f[0]].x, project[f[0]].y );
+					//ctx.fill();
+					ctx.stroke();
+				}
+			}
+		}
+
+		this.rotateX = function(rad) { X_rotate(rad, this.vertices, this.y, this.z); }
+		this.rotateY = function(rad) { Y_rotate(rad, this.vertices, this.x, this.z); }
+		this.rotateZ = function(rad) { Z_rotate(rad, this.vertices, this.x, this.y); }
+	}
+
+	function Loadfile(e) {
+		var vert = [];
+		var face = [];
+		var x=0, y=0, z=0; 		//These are center cordinates of the object
+		var vertices_no = 0;
+		//var lines;
+
+		const reader = new FileReader();
+		reader.onload = function() {
+			const lines = reader.result.split('\n').map(function(line) {
+				return line.split(" ");
+			});
+			
+			for(var i = 0;i < lines.length; i++) {
+				if(lines[i][0] == "v") {
+					x1 = parseFloat( (Math.round(parseFloat(lines[i][1])*100)/100).toFixed(2) );
+					y1 = parseFloat( (Math.round(parseFloat(lines[i][2])*100)/100).toFixed(2) - 1 );
+					z1 = parseFloat( (Math.round(parseFloat(lines[i][3])*100)/100).toFixed(2) - 1 );
+
+					vert.push(new Point3d(x1, y1, z1));
+
+					x += x1;	//These are for center cordinate calculation
+					y += y1;
+					z += z1;
+					vertices_no += 1;
+				}
+				else if(lines[i][0] == "f") {
+					face.push(new Uint16Array([
+						parseInt(lines[i][1])-1,
+						parseInt(lines[i][2])-1,
+						parseInt(lines[i][3])-1
+					]));
+
+					/*face.push([parseInt(lines[i][1])-1, parseInt(lines[i][2])-1,
+						   parseInt(lines[i][3])-1
+						 ]);*/
+				//here -1 is because the obj file starts counting the vertex number
+				//from 1 and not 0
+				}
+			}
+			
+			x /= vertices_no;	//center cordinate is calcuated by avg
+			y /= vertices_no;
+			z /= vertices_no;
+
+			objects_net = new Object(vert, face, x, y, z);
+		}
+		reader.readAsText(input.files[0]);
+	}
+
+	function Cube(x, y, z, size) {
+		Point3d.call(this, x, y, z);//it will call Point3d function with same 'this'
+		size *= 0.5;
+		this.vertices = [new Point3d(x-size, y-size, z-size),
+				 new Point3d(x+size, y-size, z-size),
+				 new Point3d(x+size, y+size, z-size),
+				 new Point3d(x-size, y+size, z-size),
+				 new Point3d(x-size, y-size, z+size),
+				 new Point3d(x+size, y-size, z+size),
+				 new Point3d(x+size, y+size, z+size),
+				 new Point3d(x-size, y+size, z+size)];
+		this.faces = [new Uint16Array([0,1,2,3]), new Uint16Array([0,4,5,1]),
+				new Uint16Array([1,5,6,2]), new Uint16Array([3,2,6,7]),
+				new Uint16Array([0,3,7,4]), new Uint16Array([4,7,6,5])
+				];
+
+		this.shear = function(a) {	//in shear we multiply 	[1, a]*[x] = [x + a*y] 
+			for(var i = 0;i < this.vertices.length; i++) {	//[0, 1] [y] = [y]
+				var p = this.vertices[i];  //where 'a' is shear constant
+				p.x = p.x + a*p.y;	//we can also add the constant in down left side
+			}						//to get p.y = a*p.x + p.y
+		}
+
+		this.rotateX = function(rad) { X_rotate(rad, this.vertices, this.y, this.z); }
+		this.rotateY = function(rad) { Y_rotate(rad, this.vertices, this.x, this.z); }
+		this.rotateZ = function(rad) { Z_rotate(rad, this.vertices, this.x, this.y); }
+
+		this.show = function() {
+			ctx.fillStyle = "#0000ff";
+			var project = Project(this.vertices, 700, 500);
+
+			for(var i = 0;i < this.faces.length; i++) {
+				var face = this.faces[i];
+
+				//var normal = normalOfPlane(this.vertices, face);
+
+				var p1 = this.vertices[face[0]];
+				var p2 = this.vertices[face[1]];
+				var p3 = this.vertices[face[2]];
+
+				var v1 = new Point3d( p2.x - p1.x, p2.y - p1.y, p2.z - p1.z );
+				var v2 = new Point3d( p3.x - p1.x, p3.y - p1.y, p3.z - p1.z );
+			
+				var n = new Point3d(v1.y*v2.z - v1.z*v2.y, v1.z*v2.x - v1.x*v2.z, v1.x*v2.y - v1.y*v2.x);
+				//the above line is the cross product of 2 vectors v1 and v2
+
+	//the below takes dot product of a vertex[a vect actually] with the normal of the plane 
+	//if confused see javidx9 3dengine part2 at 12:00, then understand why it's done here
+
+				if(-p1.x*n.x - p1.y*n.y - p1.z*n.z <= 0) {
+					//below logic is for adding color to the face
+					var l = max(0, dotProduct(lightVector, normaliseVector(n)));
+					l = backgroundLight + (1 - backgroundLight)*l;
+					var c = lerpColor([0, 0, 0], faceColor, l);
+					ctx.fillStyle = c;
+
+					ctx.beginPath();
+					ctx.moveTo( project[face[0]].x, project[face[0]].y );
+					ctx.lineTo( project[face[1]].x, project[face[1]].y );
+					ctx.lineTo( project[face[2]].x, project[face[2]].y );
+					ctx.lineTo( project[face[3]].x, project[face[3]].y );
+					ctx.lineTo( project[face[0]].x, project[face[0]].y );
+					//the above line will complete the face, back to first one
+					ctx.fill();
+					ctx.stroke();
+				}
+			}
+		}
+	}
+
+	function Tetrahedron(x, y, z, size) {
+		Point3d.call(this, x, y, z);
+		size *= 0.5;
+		this.vertices = [new Point3d(x-size, y-size, z-size),
+				 new Point3d(x+size, y-size, z-size),
+				 new Point3d(x+size, y+size, z-size),
+				 new Point3d(x-size, y+size, z-size),
+				 new Point3d(x, y, z+size)];
+		this.faces = [new Uint16Array([0,1,2,3]), new Uint16Array([0,4,1]),
+				new Uint16Array([1,4,2]), new Uint16Array([2,4,3]),
+				new Uint16Array([3,4,0])
+				];
+
+		this.rotateX = function(rad) {X_rotate(rad, this.vertices, this.y, this.z);}
+		this.rotateY = function(rad) {Y_rotate(rad, this.vertices, this.x, this.z);}
+		this.rotateZ = function(rad) {Z_rotate(rad, this.vertices, this.x, this.y);}
+		
+		this.show = function() {
+			ctx.fillStyle = "#ff0000";
+			var project = Project(this.vertices, 700, 500);
+
+			for(var i = 0;i < this.faces.length; i++) {
+				var face = this.faces[i];
+				
+				var p1 = this.vertices[face[0]];
+				var p2 = this.vertices[face[1]];
+				var p3 = this.vertices[face[2]];
+
+				var v1 = new Point3d( p2.x - p1.x, p2.y - p1.y, p2.z - p1.z );
+				var v2 = new Point3d( p3.x - p1.x, p3.y - p1.y, p3.z - p1.z );
+			
+				var n = new Point3d(v1.y*v2.z - v1.z*v2.y, v1.z*v2.x - v1.x*v2.z, v1.x*v2.y - v1.y*v2.x);
+				//the above is cross product of two vectors
+
+				if(-p1.x*n.x - p1.y*n.y - p1.z*n.z <= 0) {
+					var l = max(0, dotProduct(lightVector, normaliseVector(n)));
+					l = backgroundLight + (1 - backgroundLight)*l;
+
+					var c = lerpColor([0,0,0], [255,0,0], l);
+					ctx.fillStyle = c;
+
+				//for(var v = 0;v < face.length; v++) {
+					if(face.length == 3) {
+						ctx.beginPath();
+						ctx.moveTo(project[face[0]].x, project[face[0]].y);
+						ctx.lineTo(project[face[1]].x, project[face[1]].y);
+						ctx.lineTo(project[face[2]].x, project[face[2]].y);
+						ctx.lineTo(project[face[0]].x, project[face[0]].y);
+						ctx.fill();
+						ctx.stroke();
+					}
+					else if(face.length == 4) {
+						ctx.beginPath();
+						ctx.moveTo(project[face[0]].x, project[face[0]].y);
+						ctx.lineTo(project[face[1]].x, project[face[1]].y);
+						ctx.lineTo(project[face[2]].x, project[face[2]].y);
+						ctx.lineTo(project[face[3]].x, project[face[3]].y);
+						ctx.lineTo(project[face[0]].x, project[face[0]].y)
+						ctx.fill();
+						ctx.stroke();
+					}
+				//}	//check this for loop whether you need it or not
+				}
+			}
+		}
+	}
+
+	function Circle(x, y, z, m, n, size) {
+		Point3d.call(this, x, y, z);
+		var size = 0.5*size;
+		this.m = m;
+		this.n = n;
+		var x2, y2, z2;
+		var sin = Math.sin;
+		var cos = Math.cos;
+
+		this.vertices = [];
+		this.faces = [];
+		/*for(var i = 0;i < n; i++) {
+			this.faces.push([0, i+this.n+1, i+this.n+2, 0]);
+		}
+		for(var i = 0;i <= m; i++) {
+			for(var v = 0;v <= n; v++) {
+				
+			}
+		}*/
+
+		for(var i = 0;i <= m; i++) {
+			for(var v = 0;v <= n; v++) {
+				x2 = sin(Math.PI*i/m) * cos(2*Math.PI*v/n) * size + this.x;
+				y2 = sin(Math.PI*i/m) * sin(2*Math.PI*v/n) * size + this.y;
+				z2 = cos(Math.PI*i/m) * size + this.z;
+				this.vertices.push(new Point3d(x2, y2, z2));
+			}
+		}
+		// see coding train tutorial #25 if you don't understand above formula
+		
+		this.show = function() {
+			var project = Project(this.vertices, 700, 500);
+
+			for(var i = 0;i < project.length-this.n-2; i++) {//use this loop for
+															//rectangle mesh
+				var p1 = this.vertices[i];
+				var p2 = this.vertices[i+this.n+1];
+				var p3 = this.vertices[i+this.n+2];
+
+				var v1 = new Point3d( p2.x - p1.x, p2.y - p1.y, p2.z - p1.z );
+				var v2 = new Point3d( p3.x - p1.x, p3.y - p1.y, p3.z - p1.z );
+			
+				var nor = new Point3d(v1.y*v2.z - v1.z*v2.y, v1.z*v2.x - v1.x*v2.z, v1.x*v2.y - v1.y*v2.x);
+				
+				if(-p1.x*nor.x - p1.y*nor.y - p1.z*nor.z >= 0) {
+					var l = max(0, dotProduct(lightVector, normaliseVector(nor)));
+					l = backgroundLight + (1 - backgroundLight)*l;
+					var c = lerpColor([0,0,0], [255,0,0], l);
+					ctx.fillStyle = c;
+		
+					ctx.beginPath();
+				if(test == 0) {
+					ctx.fillStyle = "blue";
+					ctx.arc(project[i].x, project[i].y, 7, 0, 2*Math.PI);
+					ctx.fill();
+
+					ctx.arc(project[i+this.n+1].x, project[i+this.n+1].y, 7, 0, 2*Math.PI);
+					ctx.fillStyle = "green";
+					ctx.fill();
+
+					ctx.arc(project[i+this.n+2].x, project[i+this.n+2].y, 7, 0, 2*Math.PI);
+					ctx.fillStyle = "yellow";
+					ctx.fill();
+
+					ctx.arc(project[i+1].x, project[i+1].y, 7, 0, 2*Math.PI);
+					ctx.fillStyle = "black";
+					ctx.fill();
+					ctx.fillStyle = c;
+					test = 1;
+				}
+					ctx.moveTo(project[i].x, project[i].y);
+					ctx.lineTo(project[i+this.n+1].x, project[i+this.n+1].y);
+					ctx.lineTo(project[i+this.n+2].x, project[i+this.n+2].y);
+					ctx.lineTo(project[i+1].x, project[i+1].y);
+					ctx.lineTo(project[i].x, project[i].y);
+					ctx.fill();
+					ctx.stroke();
+				}
+			}
+		}
+
+		this.rotateX = function(rad) { X_rotate(rad, this.vertices, this.y, this.z); }
+		this.rotateY = function(rad) { Y_rotate(rad, this.vertices, this.x, this.z); }
+		this.rotateZ = function(rad) { Z_rotate(rad, this.vertices, this.x, this.y); }
+	}
+
+	function Cylinder(x, y, z, height, radius, resolution) {
+		Point3d.call(this, x, y, z);
+		height *= 0.5;
+
+		var x1, y1, i = 0;
+		var no_of_vertices = 360/resolution;  //these is half the number of vertices
+
+		this.vertices = new Array(no_of_vertices*2 + 2);//+2 for vertices at the 
+												//center of the base add it here
+		this.faces = [];
+		
+		for(var theta = 0;theta < 360; theta += resolution) {
+			x1 = radius*Math.cos(Math.PI*theta/180) + this.x;
+			y1 = radius*Math.sin(Math.PI*theta/180) + this.y;
+
+			this.vertices[i] = new Point3d(x1, y1, z + height);
+			this.vertices[i+no_of_vertices] = new Point3d(x1, y1, z - height);
+			i++;
+		}
+
+		this.show = function() {
+			var project = Project(this.vertices, 700, 500);
+			for(i = 0;i < project.length; i++) {
+				ctx.beginPath();
+				ctx.rect(project[i].x, project[i].y, 1, 1);
+
+				/*if(i < project.length - 5) {
+				ctx.moveTo(project[i].x, project[i].y);
+				ctx.lineTo(project[i+1].x, project[i+1].y);
+				ctx.lineTo(project[i+no_of_vertices+1].x, project[i+no_of_vertices+1].y);
+				ctx.lineTo(project[i+no_of_vertices].x, project[i+no_of_vertices].y);
+				ctx.lineTo(project[i].x, project[i].y);
+				}*/
+				ctx.stroke();
+			}
+		}
+
+		this.rotateX = function(rad) { X_rotate(rad, this.vertices, this.y, this.z); }
+		this.rotateY = function(rad) { Y_rotate(rad, this.vertices, this.x, this.z); }
+		this.rotateZ = function(rad) { Z_rotate(rad, this.vertices, this.x, this.y); }
+	}
+
+	function Torus(x, y, z, radius, tube, radial, tubular, arc) {
+		Point3d.call(this, x, y, z);
+
+		this.vertices = [];
+		this.faces = [];
+
+		for(k = 0;k <= radial; k++) {
+			for(i = 0;i <= tubular; i++) {
+				const u = i/tubular * arc;
+				const v = k/radial * Math.PI * 2;
+
+				var x = (radius + tube*Math.cos(v)) * Math.cos(u) + this.x;
+				var y = (radius + tube*Math.cos(v)) * Math.sin(u) + this.y;
+				var z = tube * Math.sin(v) + this.z;
+
+				this.vertices.push(new Point3d(x, y, z));
+
+				if(k >= 1 && i >= 1) {
+					const a = (tubular + 1)*k + i - 1;
+					const b = (tubular + 1)*(k-1) + i - 1;
+					const c = (tubular + 1)*(k-1) + i;
+					const d = (tubular + 1)*k + i
+
+					this.faces.push([a, b, d]);
+					this.faces.push([b, c, d]);
+				}
+			}
+		}
+
+		this.show = function() {
+			ctx.fillStyle = "#00ff00";
+			var project = Project(this.vertices, 700, 500);
+
+			Sort(this.faces, this.vertices);
+
+			for(var i = 0;i < this.faces.length; i++) {
+				var f = this.faces[i];
+
+				var p1 = this.vertices[f[0]];
+				var p2 = this.vertices[f[1]];
+				var p3 = this.vertices[f[2]];
+
+				var v1 = new Point3d( p2.x - p1.x, p2.y - p1.y, p2.z - p1.z );
+				var v2 = new Point3d( p3.x - p1.x, p3.y - p1.y, p3.z - p1.z );
+			
+				var n = new Point3d(v1.y*v2.z - v1.z*v2.y, v1.z*v2.x - v1.x*v2.z, v1.x*v2.y - v1.y*v2.x);
+
+				if(-p1.x*n.x - p1.y*n.y - p1.z*n.z >= 0) {
+
+				var l = max(0, dotProduct(lightVector, normaliseVector(n)));
+				l = backgroundLight + (1 - backgroundLight)*l;
+				var c = lerpColor([0, 0, 0], [0, 255, 0], l);
+				ctx.fillStyle = c;
+
+				ctx.beginPath();
+				ctx.moveTo( project[f[0]].x, project[f[0]].y );
+				ctx.lineTo( project[f[1]].x, project[f[1]].y );
+				ctx.lineTo( project[f[2]].x, project[f[2]].y );
+				ctx.lineTo( project[f[0]].x, project[f[0]].y );
+				ctx.fill();
+				ctx.stroke();
+				}
+			}
+		}
+
+		this.rotateX = function(rad) { X_rotate(rad, this.vertices, this.y, this.z); }
+		this.rotateY = function(rad) { Y_rotate(rad, this.vertices, this.x, this.z); }
+		this.rotateZ = function(rad) { Z_rotate(rad, this.vertices, this.x, this.y); }
+	}
+
+	//var cube = new Cube(0, 0, 400, 200);
+	//cube.shear(0.4);
+	//var tetrahedron = new Tetrahedron(0, 0, 400, 200);
+	//tetrahedron.rotateX(90);
+	//var circle = new Circle(0, 0, 400, 20, 16, 200);	//backface-culling is not proper
+	//var cylinder = new Cylinder(0, 0, 400, 200, 40, 72);
+
+	var torus = new Torus(0, 0, 400, 200, 70, 14, 12, Math.PI*2);
+	torus.rotateY(90);
+
+	lightVector = normaliseVector(lightVector);
+
+	document.addEventListener("keydown", move);
+	document.addEventListener("mousedown", m_down);
+	document.addEventListener("mouseup", m_up);
+	document.addEventListener("mousemove", m_move);
+
+	function Loop() {
+		ctx.clearRect(0, 0, width, height);
+
+		if(objects_net != undefined) { objects_net.show(); }
+		requestAnimationFrame(Loop);
+	}
+	Loop();
+
+    </script>
+  </body>
+</html>
